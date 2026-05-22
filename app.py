@@ -13,6 +13,18 @@ import gradio as gr
 import logging
 from logging.handlers import RotatingFileHandler
 
+from flask import Flask
+
+app = Flask(__name__)
+
+@app.route("/")
+def index():
+    return "Hello from Azure App Service!"
+
+@app.route("/health")
+def health():
+    return "OK"
+
 # ==================== CONFIG ====================
 os.environ["FLAGS_use_mkldnn"] = "0"
 
