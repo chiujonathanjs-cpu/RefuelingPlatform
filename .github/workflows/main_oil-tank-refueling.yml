@@ -63,4 +63,4 @@ jobs:
         with:
           app-name: 'oil-tank-refueling'
           slot-name: 'Production'
-          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_814D748094C54EA59DB3394AB956785C }}
+          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_EDB71577317A4AD3930BEEE4E539DD59 }}
