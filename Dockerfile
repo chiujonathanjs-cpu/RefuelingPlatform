@@ -4,6 +4,14 @@ WORKDIR /app
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
+    libjpeg-dev \
+    zlib1g-dev \
+    libfreetype6-dev \
+    liblcms2-dev \
+    libwebp-dev \
+    tcl-dev \
+    tk-dev \
+    python3-tk \
     libgl1 \
     libglib2.0-0 \
     libsm6 \
