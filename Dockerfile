@@ -12,7 +12,8 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
     
-RUN pip install pillow
+python3 -m pip install --upgrade pip
+python3 -m pip install --upgrade Pillow
 
 # Copy requirements
 COPY requirements.txt .
