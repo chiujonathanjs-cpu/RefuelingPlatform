@@ -307,3 +307,9 @@ az keyvault create \
 - [Azure App Service Documentation](https://learn.microsoft.com/en-us/azure/app-service/)
 - [Azure Container Registry](https://learn.microsoft.com/en-us/azure/container-registry/)
 - [Gradio Deployment Guide](https://gradio.app/guides/hosting-your-app-with-hugging-face/)
+
+- name: Upload deployment docs
+  uses: actions/upload-artifact@v4
+  with:
+    name: deployment-docs
+    path: azure-deployment.md
