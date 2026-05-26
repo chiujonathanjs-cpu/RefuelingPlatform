@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y \
 RUN pip install --upgrade pip setuptools wheel
 RUN pip install -r requirements.txt
 RUN pip install opencv-python
-RUNpython -m pip install "paddleocr[all]"
+RUN python -m pip install "paddleocr[all]"
 
 COPY app.py .
 EXPOSE 8000
