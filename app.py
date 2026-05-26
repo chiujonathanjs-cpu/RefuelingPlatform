@@ -12,18 +12,7 @@ from datetime import datetime
 import gradio as gr
 import logging
 from logging.handlers import RotatingFileHandler
-
-from flask import Flask
-
-app = Flask(__name__)
-
-@app.route("/")
-def index():
-    return "Hello from Azure App Service!"
-
-@app.route("/health")
-def health():
-    return "OK"
+import traceback
 
 # ==================== CONFIG ====================
 os.environ["FLAGS_use_mkldnn"] = "0"
@@ -89,6 +78,7 @@ class FlushingRotatingFileHandler(RotatingFileHandler):
         self.flush()
 
 log_path = os.path.join(ROOT_FOLDER, "app.log")
+os.makedirs(os.path.dirname(log_path), exist_ok=True)
 file_handler = FlushingRotatingFileHandler(
     log_path,
     maxBytes=10_000_000,
@@ -98,37 +88,37 @@ file_handler = FlushingRotatingFileHandler(
 file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
 
-logger.info("Start logging")
+logger.info("Application started")
 
 # ==================== OCR MODEL ====================
+ocr_model = None
 try:
+    logger.info("Loading OCR model...")
     ocr_model = PaddleOCR(lang="ch",
             use_doc_orientation_classify=False,
             use_doc_unwarping=False,
             use_textline_orientation=False, 
             enable_mkldnn=False)
+    logger.info("OCR model loaded successfully")
 except Exception as e:
     logger.error(f"Failed to load OCR model: {str(e)}")
-    ocr_model = None
+    logger.error(traceback.format_exc())
 
 # ==================== FUNCTIONS ====================
-def save_images(location, car_id, tank_id, request: gr.Request, *images):
+def save_images(location, car_id, tank_id, *images):
     try:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        client_ip = request.client.host if request else "unknown"
-        username = request.username if request and hasattr(request, "username") else "anonymous"
         uploaded_tabs = [tab_names[i] for i, img in enumerate(images) if img is not None]
         num_images = len(uploaded_tabs)
         logger.info(
-            f"UPLOAD START | IP: {client_ip} | User: {username} | "
-            f"Location: {location} | Car: {car_id} | Tank: {tank_id} | "
+            f"UPLOAD START | Location: {location} | Car: {car_id} | Tank: {tank_id} | "
             f"Uploaded tabs: {uploaded_tabs} ({num_images} images)"
         )
 
         if (not location or location == "{請選擇}" or not car_id or car_id == "{請選擇}" 
             or not tank_id or tank_id == "{請選擇}"):
             info_msg = "警告：確保已輸入地點，車號，缸號"
-            logger.info(f"UPLOAD FAILED | Error: Please select Location, Car ID, and Tank ID.")
+            logger.info(f"UPLOAD FAILED | Please select Location, Car ID, and Tank ID.")
             return info_msg
 
         prefix = f"{location}/{car_id}_{tank_id}"
@@ -139,7 +129,7 @@ def save_images(location, car_id, tank_id, request: gr.Request, *images):
             missing = [tab for tab in required_tabs if not tab_dict.get(tab)]
             if missing:
                 info_msg = f"警告：確保已輸入以下照片 {', '.join(missing)}"
-                logger.info(f"UPLOAD FAILED | Error: Missing images for required tabs: {', '.join(missing)}")
+                logger.info(f"UPLOAD FAILED | Missing images for required tabs: {', '.join(missing)}")
                 return info_msg
 
         base_dir = os.path.join(ROOT_FOLDER, today, prefix)
@@ -170,14 +160,15 @@ def save_images(location, car_id, tank_id, request: gr.Request, *images):
 
             original_width, original_height = img.size
             new_width = int(original_width * (400 / original_height))
-            img = img.resize((new_width, 400))
+            img_resized = img.resize((new_width, 400))
 
             tab_name = tab_names[i]
             filename = f"{tab_name}.jpg"
             filepath = os.path.join(base_dir, filename)
 
-            img.save(filepath)
+            img_resized.save(filepath)
             saved_paths.append(filepath)
+            logger.info(f"Saved image: {filepath}")
 
         if saved_paths:
             detected_tabs_exist = []
@@ -206,11 +197,12 @@ def save_images(location, car_id, tank_id, request: gr.Request, *images):
         else:
             info_msg = "警告：沒有新照片"
             return_msg.append(info_msg)
-            logger.info(f"UPLOAD FAILED | Warning: No new image")
+            logger.info(f"UPLOAD FAILED | No new image")
             return '\n'.join(return_msg)
 
     except Exception as e:
-        logger.error(f"SUBMISSION EXCEPTION | Error: {str(e)}", exc_info=True)
+        logger.error(f"SUBMISSION EXCEPTION | Error: {str(e)}")
+        logger.error(traceback.format_exc())
         return f"未知錯誤: {str(e)}"
 
 def prefer_back_camera():
@@ -235,9 +227,12 @@ def prefer_back_camera():
 def nearest(gps):
     if "Allow" in gps:
         return "{請選擇}"
-    lat, lon = map(float, gps.strip("[]").split(","))
-    d = lambda c: (lat-c[1])**2 + (lon-c[2])**2
-    return min(depot_gps, key=d)[0]
+    try:
+        lat, lon = map(float, gps.strip("[]").split(","))
+        d = lambda c: (lat-c[1])**2 + (lon-c[2])**2
+        return min(depot_gps, key=d)[0]
+    except:
+        return "{請選擇}"
 
 def update_tank_dropdown(tank_id):
     tank_dropdown = tank_list.get(tank_id, ["{請選擇}"])
@@ -252,7 +247,10 @@ def toggle_tabs(location, car, tank):
                 updates.append(gr.update(visible=True))
             else:
                 updates.append(gr.update(visible=False))
-    return updates + [str({location: active_tabs})]
+    else:
+        for tab in tab_names:
+            updates.append(gr.update(visible=False))
+    return updates
 
 def toggle_save(location, car, tank):
     if location != "{請選擇}" and car != "{請選擇}" and tank != "{請選擇}":
@@ -265,203 +263,280 @@ def clear_images(selection):
 
 # ==================== HISTORY FUNCTIONS ====================
 def get_car_ids(date, location):
-    date = datetime.fromtimestamp(date).strftime('%Y-%m-%d')
-    base_path = f"{ROOT_FOLDER}/{date}/{location}"
-    candidates = glob.glob(f"{base_path}/第*車_*", recursive=False)
-    car_ids = [os.path.basename(c).split("_")[0] for c in candidates]
-    return sorted(set(car_ids))
+    try:
+        date = datetime.fromtimestamp(date).strftime('%Y-%m-%d')
+        base_path = f"{ROOT_FOLDER}/{date}/{location}"
+        candidates = glob.glob(f"{base_path}/第*車_*", recursive=False)
+        car_ids_list = [os.path.basename(c).split("_")[0] for c in candidates]
+        return sorted(set(car_ids_list))
+    except Exception as e:
+        logger.error(f"Error getting car IDs: {str(e)}")
+        return []
 
 def update_car_dropdown(date, location):
-    car_ids = get_car_ids(date, location)
-    if car_ids:
-        return gr.update(choices=car_ids, value=car_ids[0])
+    car_ids_list = get_car_ids(date, location)
+    if car_ids_list:
+        return gr.update(choices=car_ids_list, value=car_ids_list[0])
     else:
         return gr.update(choices=[], value=None)
 
 def get_tank_names(date, location, id):
-    date = datetime.fromtimestamp(date).strftime('%Y-%m-%d')
-    base_path = f"{ROOT_FOLDER}/{date}/{location}"
-    candidates = glob.glob(f"{base_path}/{id}_*", recursive=False)
-    return [c.split("_")[-1] for c in candidates]
+    try:
+        date = datetime.fromtimestamp(date).strftime('%Y-%m-%d')
+        base_path = f"{ROOT_FOLDER}/{date}/{location}"
+        candidates = glob.glob(f"{base_path}/{id}_*", recursive=False)
+        return [c.split("_")[-1] for c in candidates]
+    except Exception as e:
+        logger.error(f"Error getting tank names: {str(e)}")
+        return []
 
 def find_jpg_images(date, location, id, tank):
-    date = datetime.fromtimestamp(date).strftime('%Y-%m-%d')
-    pattern = f"{ROOT_FOLDER}/{date}/{location}/{id}_{tank}/**/*.jpg"
-    files = sorted(glob.glob(pattern, recursive=True))
-    return [(f, f"Tank {tank} - {os.path.basename(f)}") for f in files]
+    try:
+        date = datetime.fromtimestamp(date).strftime('%Y-%m-%d')
+        pattern = f"{ROOT_FOLDER}/{date}/{location}/{id}_{tank}/**/*.jpg"
+        files = sorted(glob.glob(pattern, recursive=True))
+        return [(f, f"Tank {tank} - {os.path.basename(f)}") for f in files]
+    except Exception as e:
+        logger.error(f"Error finding JPG images: {str(e)}")
+        return []
 
 def assign_tanks(date, location, id):
-    tanks = get_tank_names(date, location, id)
-    galleries_data = []
-    labels = []
-    for i in range(4):
-        if i < len(tanks):
-            tank_name = tanks[i]
-            galleries_data.append(find_jpg_images(date, location, id, tank_name))
-            labels.append(f"Tank: {tank_name}")
-        else:
-            galleries_data.append([])
-            labels.append("No Tank")
-    msg = f"Found {len(tanks)} tank records: {', '.join(tanks)}"
-    return galleries_data[0], labels[0], galleries_data[1], labels[1], galleries_data[2], labels[2], galleries_data[3], labels[3], msg
+    try:
+        tanks = get_tank_names(date, location, id)
+        galleries_data = []
+        labels = []
+        for i in range(4):
+            if i < len(tanks):
+                tank_name = tanks[i]
+                galleries_data.append(find_jpg_images(date, location, id, tank_name))
+                labels.append(f"Tank: {tank_name}")
+            else:
+                galleries_data.append([])
+                labels.append("No Tank")
+        msg = f"Found {len(tanks)} tank records: {', '.join(tanks)}" if tanks else "No tank records found"
+        return galleries_data[0], labels[0], galleries_data[1], labels[1], galleries_data[2], labels[2], galleries_data[3], labels[3], msg
+    except Exception as e:
+        logger.error(f"Error assigning tanks: {str(e)}")
+        return [], "No Tank", [], "No Tank", [], "No Tank", [], "No Tank", f"Error: {str(e)}"
 
 # ==================== OCR PROCESSING ====================
-abnormal_count = 0
-
 def auto_adjust_brightness_contrast(img_cv, clip_limit=2.0, tile_grid_size=(8,8)):
-    lab = cv2.cvtColor(img_cv, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
-    l_adjusted = clahe.apply(l)
-    lab_adjusted = cv2.merge([l_adjusted, a, b])
-    adjusted_cv = cv2.cvtColor(lab_adjusted, cv2.COLOR_LAB2BGR)
-    return adjusted_cv
+    try:
+        lab = cv2.cvtColor(img_cv, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
+        l_adjusted = clahe.apply(l)
+        lab_adjusted = cv2.merge([l_adjusted, a, b])
+        adjusted_cv = cv2.cvtColor(lab_adjusted, cv2.COLOR_LAB2BGR)
+        return adjusted_cv
+    except Exception as e:
+        logger.error(f"Error adjusting brightness: {str(e)}")
+        return img_cv
 
 def area(bbox):
-    bbox = np.array(bbox, dtype=np.int64)
-    x1, y1, x2, y2 = bbox
-    return abs((x2-x1)*(y2-y1))
-
-def ocr(image_path):
-    if ocr_model is None:
-        return "0"
-    
     try:
-        image = cv2.imread(image_path)
-        if image is None:
-            return "0"
-        h, w, c = image.shape
-        image = cv2.resize(image, (400, int(400 * h / float(w))), interpolation=cv2.INTER_AREA)
-        image = auto_adjust_brightness_contrast(image)
-        result = ocr_model.predict(image)
-
-        for res in result:
-          text = res["rec_texts"]
-          conf = res["rec_scores"]
-          box = res["rec_boxes"]
-          result_list = []
-          for i in range(len(text)):
-            num = re.sub(r'[.,]', '', text[i])
-            if conf[i] > 0.8 and num.isdigit():
-              if int(num) < 100000:
-                result_list.append([int(num), round(conf[i], 3), box[i], area(box[i])])
-
-          result_list = sorted(result_list, key=lambda x: x[3], reverse=True)
-          if not result_list:
-            return "0"
-          for x, _, _, _ in result_list:
-            if 0 < x < 10:
-              continue
-            elif x > 30000:
-              continue
-            else:
-              return str(x)
-          return "0"
-    except Exception as e:
-        logger.error(f"OCR Error: {str(e)}")
-        return "0"
+        bbox = np.array(bbox, dtype=np.int64)
+        x1, y1, x2, y2 = bbox
+        return abs((x2-x1)*(y2-y1))
+    except:
+        return 0
 
 # ==================== GRADIO INTERFACE ====================
-with gr.Blocks(head=prefer_back_camera()) as demo:
-    gr.Markdown("落油記錄工具")
+def create_gradio_interface():
+    with gr.Blocks(title="落油記錄工具", theme=gr.themes.Soft()) as demo:
+        gr.Markdown("# 落油記錄工具")
+        gr.Markdown("---")
 
-    with gr.Tabs():
-        # Module 1: 拍照 (Photo Recording)
-        with gr.Tab("拍照"):
-            with gr.Row():
-                location_dropdown = gr.Dropdown(choices=locations, label="地點(gps)", value=locations[0], allow_custom_value=False, filterable=False, interactive=True)
-                car_dropdown = gr.Dropdown(choices=car_ids, label="車號", value=car_ids[0], allow_custom_value=False, filterable=False)
-                tank_dropdown = gr.Dropdown(choices=["{請選擇}"], label="缸號", value="{請選擇}", allow_custom_value=False, filterable=False)
+        with gr.Tabs():
+            # Module 1: 拍照 (Photo Recording)
+            with gr.Tab("📸 拍照"):
+                with gr.Row():
+                    with gr.Column():
+                        location_dropdown = gr.Dropdown(
+                            choices=locations, 
+                            label="地點", 
+                            value=locations[0], 
+                            allow_custom_value=False, 
+                            filterable=False, 
+                            interactive=True
+                        )
+                    with gr.Column():
+                        car_dropdown = gr.Dropdown(
+                            choices=car_ids, 
+                            label="車號", 
+                            value=car_ids[0], 
+                            allow_custom_value=False, 
+                            filterable=False
+                        )
+                    with gr.Column():
+                        tank_dropdown = gr.Dropdown(
+                            choices=["{請選擇}"], 
+                            label="缸號", 
+                            value="{請選擇}", 
+                            allow_custom_value=False, 
+                            filterable=False
+                        )
 
-                raw_gps = gr.Textbox(visible=False)
-                demo.load(None, None, raw_gps, js="""() => new Promise(r => navigator.geolocation.getCurrentPosition(
-                    p => r(`[${p.coords.latitude}, ${p.coords.longitude}]`),
-                    () => r("[Tap Allow Location]"), {enableHighAccuracy:true}))""")
-                raw_gps.change(nearest, raw_gps, location_dropdown)
+                gr.Markdown("### 上傳照片")
+                with gr.Tabs() as img_tabs:
+                    image_inputs = []
+                    tab_list = []
+                    for tab_name in tab_names:
+                        with gr.Tab(tab_name, visible=False) as tab:
+                            img_input = gr.Image(
+                                type="pil", 
+                                label=f"上傳 {tab_name} 照片", 
+                                height=400, 
+                                sources=['webcam'], 
+                                mirror_webcam=False, 
+                                elem_id="camera_input"
+                            )
+                            image_inputs.append(img_input)
+                            tab_list.append(tab)
+
+                with gr.Row():
+                    save_btn = gr.Button("💾 儲存所有照片", variant="primary", size="lg", visible=False)
+
+                output_text = gr.Textbox(label="狀態", lines=4, interactive=False)
+
+                save_btn.click(
+                    fn=save_images,
+                    inputs=[location_dropdown, car_dropdown, tank_dropdown] + image_inputs,
+                    outputs=output_text
+                )
+
+                location_dropdown.change(toggle_tabs, [location_dropdown, car_dropdown, tank_dropdown], tab_list)
+                car_dropdown.change(toggle_tabs, [location_dropdown, car_dropdown, tank_dropdown], tab_list)
+                tank_dropdown.change(toggle_tabs, [location_dropdown, car_dropdown, tank_dropdown], tab_list)
+
+                location_dropdown.change(toggle_save, [location_dropdown, car_dropdown, tank_dropdown], save_btn)
+                car_dropdown.change(toggle_save, [location_dropdown, car_dropdown, tank_dropdown], save_btn)
+                tank_dropdown.change(toggle_save, [location_dropdown, car_dropdown, tank_dropdown], save_btn)
+
+                location_dropdown.change(clear_images, location_dropdown, image_inputs)
+                car_dropdown.change(clear_images, location_dropdown, image_inputs)
+                tank_dropdown.change(clear_images, location_dropdown, image_inputs)
+
                 location_dropdown.change(fn=update_tank_dropdown, inputs=location_dropdown, outputs=tank_dropdown)
 
-            with gr.Tabs() as img_tabs:
-                image_inputs = []
-                tab_list = []
-                for tab_name in tab_names:
-                    with gr.Tab(tab_name, visible=False) as tab:
-                        img_input = gr.Image(type="pil", label=f"Upload {tab_name} photo", height=400, sources=['webcam'], mirror_webcam=False, elem_id="camera_input")
-                        image_inputs.append(img_input)
-                        tab_list.append(tab)
+            # Module 2: 記錄 (History)
+            with gr.Tab("📋 記錄"):
+                with gr.Row():
+                    with gr.Column():
+                        date_picker = gr.DateTime(
+                            label="日期", 
+                            include_time=False, 
+                            value=datetime.now().date().isoformat()
+                        )
+                    with gr.Column():
+                        location_dropdown2 = gr.Dropdown(
+                            choices=locations, 
+                            label="地點", 
+                            value=locations[0]
+                        )
+                    with gr.Column():
+                        car_dropdown2 = gr.Dropdown(
+                            choices=[], 
+                            label="車號", 
+                            value=None
+                        )
 
-            save_btn = gr.Button("儲存所有照片", variant="primary", size="lg", visible=False)
-            output_text = gr.Textbox(label="狀態", lines=6)
+                tank_message = gr.Textbox(label="坦克摘要", interactive=False, lines=2)
 
-            save_btn.click(
-                fn=save_images,
-                inputs=[location_dropdown, car_dropdown, tank_dropdown] + image_inputs,
-                outputs=output_text
-            )
+                with gr.Row():
+                    with gr.Column():
+                        tank_label1 = gr.Textbox(label="坦克信息 1", interactive=False)
+                        gallery1 = gr.Gallery(columns=4, label="坦克 1 圖片")
+                    with gr.Column():
+                        tank_label2 = gr.Textbox(label="坦克信息 2", interactive=False)
+                        gallery2 = gr.Gallery(columns=4, label="坦克 2 圖片")
 
-            location_dropdown.change(toggle_tabs, [location_dropdown, car_dropdown, tank_dropdown], tab_list)
-            car_dropdown.change(toggle_tabs, [location_dropdown, car_dropdown, tank_dropdown], tab_list)
-            tank_dropdown.change(toggle_tabs, [location_dropdown, car_dropdown, tank_dropdown], tab_list)
+                with gr.Row():
+                    with gr.Column():
+                        tank_label3 = gr.Textbox(label="坦克信息 3", interactive=False)
+                        gallery3 = gr.Gallery(columns=4, label="坦克 3 圖片")
+                    with gr.Column():
+                        tank_label4 = gr.Textbox(label="坦克信息 4", interactive=False)
+                        gallery4 = gr.Gallery(columns=4, label="坦克 4 圖片")
 
-            location_dropdown.change(toggle_save, [location_dropdown, car_dropdown, tank_dropdown], save_btn)
-            car_dropdown.change(toggle_save, [location_dropdown, car_dropdown, tank_dropdown], save_btn)
-            tank_dropdown.change(toggle_save, [location_dropdown, car_dropdown, tank_dropdown], save_btn)
+                def update_all(date, location, car):
+                    if car is None:
+                        return [], "No Tank", [], "No Tank", [], "No Tank", [], "No Tank", "請選擇車號"
+                    g1, l1, g2, l2, g3, l3, g4, l4, msg = assign_tanks(date, location, car)
+                    return g1, l1, g2, l2, g3, l3, g4, l4, msg
 
-            location_dropdown.change(clear_images, location_dropdown, image_inputs)
-            car_dropdown.change(clear_images, location_dropdown, image_inputs)
-            tank_dropdown.change(clear_images, location_dropdown, image_inputs)
+                date_picker.change(update_car_dropdown, [date_picker, location_dropdown2], car_dropdown2)
+                location_dropdown2.change(update_car_dropdown, [date_picker, location_dropdown2], car_dropdown2)
 
-        # Module 2: 記錄 (History)
-        with gr.Tab("記錄"):
-            with gr.Row():
-                date_picker = gr.DateTime(label="日期", include_time=False, value=datetime.now().date().isoformat())
-                location_dropdown2 = gr.Dropdown(choices=locations, label="地點(gps)", value=locations[0])
-                car_dropdown2 = gr.Dropdown(choices=[], label="車號", value=None)
+                date_picker.change(update_all, [date_picker, location_dropdown2, car_dropdown2],
+                                  [gallery1, tank_label1, gallery2, tank_label2, gallery3, tank_label3, gallery4, tank_label4, tank_message])
+                location_dropdown2.change(update_all, [date_picker, location_dropdown2, car_dropdown2],
+                                          [gallery1, tank_label1, gallery2, tank_label2, gallery3, tank_label3, gallery4, tank_label4, tank_message])
+                car_dropdown2.change(update_all, [date_picker, location_dropdown2, car_dropdown2],
+                                    [gallery1, tank_label1, gallery2, tank_label2, gallery3, tank_label3, gallery4, tank_label4, tank_message])
 
-            tank_message = gr.Textbox(label="Tank Summary", interactive=False, lines=2)
+            # Module 3: 關於 (About)
+            with gr.Tab("ℹ️ 關於"):
+                gr.Markdown("""
+                ## 落油記錄工具
+                
+                本應用程序用於記錄和管理油田測量數據。
+                
+                **功能：**
+                - 📸 拍照並上傳油田測量照片
+                - 📋 查看歷史記錄和相冊
+                - 🔍 OCR 識別測量數值
+                - 💾 自動保存和組織數據
+                
+                **使用說明：**
+                1. 在"拍照"標籤頁選擇地點、車號和缸號
+                2. 為每個類別上傳相應的照片
+                3. 點擊"儲存所有照片"保存數據
+                4. 在"記錄"標籤頁查看歷史數據
+                
+                **支持的地點：**
+                - CFD創富
+                - CWD柴灣
+                - SHD小蠔灣
+                - SWD上環
+                - TCD東涌
+                - TKD將軍澳
+                - TMD屯門
+                - WCD黃竹坑
+                - WKD西九
+                
+                ---
+                版本 1.0.0 | 2026-05-22
+                """)
 
-            tank_label1 = gr.Textbox(label="Tank Info 1", interactive=False)
-            gallery1 = gr.Gallery(columns=4)
-            tank_label2 = gr.Textbox(label="Tank Info 2", interactive=False)
-            gallery2 = gr.Gallery(columns=4)
-            tank_label3 = gr.Textbox(label="Tank Info 3", interactive=False)
-            gallery3 = gr.Gallery(columns=4)
-            tank_label4 = gr.Textbox(label="Tank Info 4", interactive=False)
-            gallery4 = gr.Gallery(columns=4)
-
-            def update_all(date, location, car):
-                g1, l1, g2, l2, g3, l3, g4, l4, msg = assign_tanks(date, location, car)
-                return g1, l1, g2, l2, g3, l3, g4, l4, msg
-
-            date_picker.change(update_car_dropdown, [date_picker, location_dropdown2], car_dropdown2)
-            location_dropdown2.change(update_car_dropdown, [date_picker, location_dropdown2], car_dropdown2)
-
-            date_picker.change(update_all, [date_picker, location_dropdown2, car_dropdown2],
-                              [gallery1, tank_label1, gallery2, tank_label2, gallery3, tank_label3, gallery4, tank_label4, tank_message])
-            location_dropdown2.change(update_all, [date_picker, location_dropdown2, car_dropdown2],
-                                      [gallery1, tank_label1, gallery2, tank_label2, gallery3, tank_label3, gallery4, tank_label4, tank_message])
-            car_dropdown2.change(update_all, [date_picker, location_dropdown2, car_dropdown2],
-                                [gallery1, tank_label1, gallery2, tank_label2, gallery3, tank_label3, gallery4, tank_label4, tank_message])
-
-        # Module 3: AI Processing (Placeholder - simplified for Azure)
-        with gr.Tab("AI處理"):
-            gr.Markdown("OCR processing is available but simplified for Azure deployment")
-            gr.Textbox(value="請上傳照片以使用AI處理功能", interactive=False, label="狀態")
-
-    demo.css = """
-    #camera_input button {
-        transform: scale(2);
-    }
-    """
+        demo.css = """
+        #camera_input button {
+            transform: scale(2);
+        }
+        """
+        
+        return demo
 
 if __name__ == "__main__":
-    # Get port from environment or default to 7860
-    port = int(os.getenv("PORT", 7860))
-    
-    # Launch Gradio with Azure App Services compatible settings
-    demo.launch(
-        server_name="0.0.0.0",
-        server_port=port,
-        share=False,
-        debug=False,
-        show_error=True
-    )
+    try:
+        # Create Gradio interface
+        demo = create_gradio_interface()
+        
+        # Get port from environment or default to 7860
+        port = int(os.getenv("PORT", "7860"))
+        
+        logger.info(f"Starting Gradio server on port {port}")
+        
+        # Launch Gradio with Azure App Services compatible settings
+        demo.launch(
+            server_name="0.0.0.0",
+            server_port=port,
+            share=False,
+            debug=False,
+            show_error=True,
+            allowed_paths=[ROOT_FOLDER]
+        )
+    except Exception as e:
+        logger.error(f"Failed to start application: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise
