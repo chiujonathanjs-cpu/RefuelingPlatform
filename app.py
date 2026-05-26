@@ -234,8 +234,8 @@ def nearest(gps):
     except:
         return "{請選擇}"
 
-def update_tank_dropdown(tank_id):
-    tank_dropdown = tank_list.get(tank_id, ["{請選擇}"])
+def update_tank_dropdown(location):
+    tank_dropdown = tank_list.get(location, ["{請選擇}"])
     return gr.Dropdown(choices=tank_dropdown, label="缸號", value=tank_dropdown[0], allow_custom_value=False, filterable=False, interactive=True)
 
 def toggle_tabs(location, car, tank):
@@ -264,8 +264,11 @@ def clear_images(selection):
 # ==================== HISTORY FUNCTIONS ====================
 def get_car_ids(date, location):
     try:
-        date = datetime.fromtimestamp(date).strftime('%Y-%m-%d')
-        base_path = f"{ROOT_FOLDER}/{date}/{location}"
+        if isinstance(date, str):
+            date_str = date.split("T")[0]  # Handle ISO format
+        else:
+            date_str = datetime.fromtimestamp(date).strftime('%Y-%m-%d')
+        base_path = f"{ROOT_FOLDER}/{date_str}/{location}"
         candidates = glob.glob(f"{base_path}/第*車_*", recursive=False)
         car_ids_list = [os.path.basename(c).split("_")[0] for c in candidates]
         return sorted(set(car_ids_list))
@@ -280,35 +283,41 @@ def update_car_dropdown(date, location):
     else:
         return gr.update(choices=[], value=None)
 
-def get_tank_names(date, location, id):
+def get_tank_names(date, location, car_id):
     try:
-        date = datetime.fromtimestamp(date).strftime('%Y-%m-%d')
-        base_path = f"{ROOT_FOLDER}/{date}/{location}"
-        candidates = glob.glob(f"{base_path}/{id}_*", recursive=False)
+        if isinstance(date, str):
+            date_str = date.split("T")[0]
+        else:
+            date_str = datetime.fromtimestamp(date).strftime('%Y-%m-%d')
+        base_path = f"{ROOT_FOLDER}/{date_str}/{location}"
+        candidates = glob.glob(f"{base_path}/{car_id}_*", recursive=False)
         return [c.split("_")[-1] for c in candidates]
     except Exception as e:
         logger.error(f"Error getting tank names: {str(e)}")
         return []
 
-def find_jpg_images(date, location, id, tank):
+def find_jpg_images(date, location, car_id, tank):
     try:
-        date = datetime.fromtimestamp(date).strftime('%Y-%m-%d')
-        pattern = f"{ROOT_FOLDER}/{date}/{location}/{id}_{tank}/**/*.jpg"
+        if isinstance(date, str):
+            date_str = date.split("T")[0]
+        else:
+            date_str = datetime.fromtimestamp(date).strftime('%Y-%m-%d')
+        pattern = f"{ROOT_FOLDER}/{date_str}/{location}/{car_id}_{tank}/**/*.jpg"
         files = sorted(glob.glob(pattern, recursive=True))
         return [(f, f"Tank {tank} - {os.path.basename(f)}") for f in files]
     except Exception as e:
         logger.error(f"Error finding JPG images: {str(e)}")
         return []
 
-def assign_tanks(date, location, id):
+def assign_tanks(date, location, car_id):
     try:
-        tanks = get_tank_names(date, location, id)
+        tanks = get_tank_names(date, location, car_id)
         galleries_data = []
         labels = []
         for i in range(4):
             if i < len(tanks):
                 tank_name = tanks[i]
-                galleries_data.append(find_jpg_images(date, location, id, tank_name))
+                galleries_data.append(find_jpg_images(date, location, car_id, tank_name))
                 labels.append(f"Tank: {tank_name}")
             else:
                 galleries_data.append([])
@@ -342,186 +351,183 @@ def area(bbox):
         return 0
 
 # ==================== GRADIO INTERFACE ====================
-def create_gradio_interface():
-    with gr.Blocks(title="落油記錄工具", theme=gr.themes.Soft()) as demo:
-        gr.Markdown("# 落油記錄工具")
-        gr.Markdown("---")
+# Create demo at module level to avoid recreation
+demo = gr.Blocks(title="落油記錄工具", theme=gr.themes.Soft())
 
-        with gr.Tabs():
-            # Module 1: 拍照 (Photo Recording)
-            with gr.Tab("📸 拍照"):
-                with gr.Row():
-                    with gr.Column():
-                        location_dropdown = gr.Dropdown(
-                            choices=locations, 
-                            label="地點", 
-                            value=locations[0], 
-                            allow_custom_value=False, 
-                            filterable=False, 
-                            interactive=True
+with demo:
+    gr.Markdown("# 落油記錄工具")
+    gr.Markdown("---")
+
+    with gr.Tabs():
+        # Module 1: 拍照 (Photo Recording)
+        with gr.Tab("📸 拍照"):
+            with gr.Row():
+                with gr.Column():
+                    location_dropdown = gr.Dropdown(
+                        choices=locations, 
+                        label="地點", 
+                        value=locations[0], 
+                        allow_custom_value=False, 
+                        filterable=False, 
+                        interactive=True
+                    )
+                with gr.Column():
+                    car_dropdown = gr.Dropdown(
+                        choices=car_ids, 
+                        label="車號", 
+                        value=car_ids[0], 
+                        allow_custom_value=False, 
+                        filterable=False
+                    )
+                with gr.Column():
+                    tank_dropdown = gr.Dropdown(
+                        choices=["{請選擇}"], 
+                        label="缸號", 
+                        value="{請選擇}", 
+                        allow_custom_value=False, 
+                        filterable=False
+                    )
+
+            gr.Markdown("### 上傳照片")
+            with gr.Tabs() as img_tabs:
+                image_inputs = []
+                tab_list = []
+                for tab_name in tab_names:
+                    with gr.Tab(tab_name, visible=False) as tab:
+                        img_input = gr.Image(
+                            type="pil", 
+                            label=f"上傳 {tab_name} 照片", 
+                            height=400, 
+                            sources=['webcam'], 
+                            mirror_webcam=False, 
+                            elem_id="camera_input"
                         )
-                    with gr.Column():
-                        car_dropdown = gr.Dropdown(
-                            choices=car_ids, 
-                            label="車號", 
-                            value=car_ids[0], 
-                            allow_custom_value=False, 
-                            filterable=False
-                        )
-                    with gr.Column():
-                        tank_dropdown = gr.Dropdown(
-                            choices=["{請選擇}"], 
-                            label="缸號", 
-                            value="{請選擇}", 
-                            allow_custom_value=False, 
-                            filterable=False
-                        )
+                        image_inputs.append(img_input)
+                        tab_list.append(tab)
 
-                gr.Markdown("### 上傳照片")
-                with gr.Tabs() as img_tabs:
-                    image_inputs = []
-                    tab_list = []
-                    for tab_name in tab_names:
-                        with gr.Tab(tab_name, visible=False) as tab:
-                            img_input = gr.Image(
-                                type="pil", 
-                                label=f"上傳 {tab_name} 照片", 
-                                height=400, 
-                                sources=['webcam'], 
-                                mirror_webcam=False, 
-                                elem_id="camera_input"
-                            )
-                            image_inputs.append(img_input)
-                            tab_list.append(tab)
+            with gr.Row():
+                save_btn = gr.Button("💾 儲存所有照片", variant="primary", size="lg", visible=False)
 
-                with gr.Row():
-                    save_btn = gr.Button("💾 儲存所有照片", variant="primary", size="lg", visible=False)
+            output_text = gr.Textbox(label="狀態", lines=4, interactive=False)
 
-                output_text = gr.Textbox(label="狀態", lines=4, interactive=False)
+            save_btn.click(
+                fn=save_images,
+                inputs=[location_dropdown, car_dropdown, tank_dropdown] + image_inputs,
+                outputs=output_text
+            )
 
-                save_btn.click(
-                    fn=save_images,
-                    inputs=[location_dropdown, car_dropdown, tank_dropdown] + image_inputs,
-                    outputs=output_text
-                )
+            location_dropdown.change(toggle_tabs, [location_dropdown, car_dropdown, tank_dropdown], tab_list)
+            car_dropdown.change(toggle_tabs, [location_dropdown, car_dropdown, tank_dropdown], tab_list)
+            tank_dropdown.change(toggle_tabs, [location_dropdown, car_dropdown, tank_dropdown], tab_list)
 
-                location_dropdown.change(toggle_tabs, [location_dropdown, car_dropdown, tank_dropdown], tab_list)
-                car_dropdown.change(toggle_tabs, [location_dropdown, car_dropdown, tank_dropdown], tab_list)
-                tank_dropdown.change(toggle_tabs, [location_dropdown, car_dropdown, tank_dropdown], tab_list)
+            location_dropdown.change(toggle_save, [location_dropdown, car_dropdown, tank_dropdown], save_btn)
+            car_dropdown.change(toggle_save, [location_dropdown, car_dropdown, tank_dropdown], save_btn)
+            tank_dropdown.change(toggle_save, [location_dropdown, car_dropdown, tank_dropdown], save_btn)
 
-                location_dropdown.change(toggle_save, [location_dropdown, car_dropdown, tank_dropdown], save_btn)
-                car_dropdown.change(toggle_save, [location_dropdown, car_dropdown, tank_dropdown], save_btn)
-                tank_dropdown.change(toggle_save, [location_dropdown, car_dropdown, tank_dropdown], save_btn)
+            location_dropdown.change(clear_images, location_dropdown, image_inputs)
+            car_dropdown.change(clear_images, location_dropdown, image_inputs)
+            tank_dropdown.change(clear_images, location_dropdown, image_inputs)
 
-                location_dropdown.change(clear_images, location_dropdown, image_inputs)
-                car_dropdown.change(clear_images, location_dropdown, image_inputs)
-                tank_dropdown.change(clear_images, location_dropdown, image_inputs)
+            location_dropdown.change(fn=update_tank_dropdown, inputs=location_dropdown, outputs=tank_dropdown)
 
-                location_dropdown.change(fn=update_tank_dropdown, inputs=location_dropdown, outputs=tank_dropdown)
+        # Module 2: 記錄 (History)
+        with gr.Tab("📋 記錄"):
+            with gr.Row():
+                with gr.Column():
+                    date_picker = gr.DateTime(
+                        label="日期", 
+                        include_time=False, 
+                        value=datetime.now().date().isoformat()
+                    )
+                with gr.Column():
+                    location_dropdown2 = gr.Dropdown(
+                        choices=locations, 
+                        label="地點", 
+                        value=locations[0]
+                    )
+                with gr.Column():
+                    car_dropdown2 = gr.Dropdown(
+                        choices=[], 
+                        label="車號", 
+                        value=None
+                    )
 
-            # Module 2: 記錄 (History)
-            with gr.Tab("📋 記錄"):
-                with gr.Row():
-                    with gr.Column():
-                        date_picker = gr.DateTime(
-                            label="日期", 
-                            include_time=False, 
-                            value=datetime.now().date().isoformat()
-                        )
-                    with gr.Column():
-                        location_dropdown2 = gr.Dropdown(
-                            choices=locations, 
-                            label="地點", 
-                            value=locations[0]
-                        )
-                    with gr.Column():
-                        car_dropdown2 = gr.Dropdown(
-                            choices=[], 
-                            label="車號", 
-                            value=None
-                        )
+            tank_message = gr.Textbox(label="坦克摘要", interactive=False, lines=2)
 
-                tank_message = gr.Textbox(label="坦克摘要", interactive=False, lines=2)
+            with gr.Row():
+                with gr.Column():
+                    tank_label1 = gr.Textbox(label="坦克信息 1", interactive=False)
+                    gallery1 = gr.Gallery(columns=4, label="坦克 1 圖片")
+                with gr.Column():
+                    tank_label2 = gr.Textbox(label="坦克信息 2", interactive=False)
+                    gallery2 = gr.Gallery(columns=4, label="坦克 2 圖片")
 
-                with gr.Row():
-                    with gr.Column():
-                        tank_label1 = gr.Textbox(label="坦克信息 1", interactive=False)
-                        gallery1 = gr.Gallery(columns=4, label="坦克 1 圖片")
-                    with gr.Column():
-                        tank_label2 = gr.Textbox(label="坦克信息 2", interactive=False)
-                        gallery2 = gr.Gallery(columns=4, label="坦克 2 圖片")
+            with gr.Row():
+                with gr.Column():
+                    tank_label3 = gr.Textbox(label="坦克信息 3", interactive=False)
+                    gallery3 = gr.Gallery(columns=4, label="坦克 3 圖片")
+                with gr.Column():
+                    tank_label4 = gr.Textbox(label="坦克信息 4", interactive=False)
+                    gallery4 = gr.Gallery(columns=4, label="坦克 4 圖片")
 
-                with gr.Row():
-                    with gr.Column():
-                        tank_label3 = gr.Textbox(label="坦克信息 3", interactive=False)
-                        gallery3 = gr.Gallery(columns=4, label="坦克 3 圖片")
-                    with gr.Column():
-                        tank_label4 = gr.Textbox(label="坦克信息 4", interactive=False)
-                        gallery4 = gr.Gallery(columns=4, label="坦克 4 圖片")
+            def update_all(date, location, car):
+                if car is None:
+                    return [], "No Tank", [], "No Tank", [], "No Tank", [], "No Tank", "請選擇車號"
+                g1, l1, g2, l2, g3, l3, g4, l4, msg = assign_tanks(date, location, car)
+                return g1, l1, g2, l2, g3, l3, g4, l4, msg
 
-                def update_all(date, location, car):
-                    if car is None:
-                        return [], "No Tank", [], "No Tank", [], "No Tank", [], "No Tank", "請選擇車號"
-                    g1, l1, g2, l2, g3, l3, g4, l4, msg = assign_tanks(date, location, car)
-                    return g1, l1, g2, l2, g3, l3, g4, l4, msg
+            date_picker.change(update_car_dropdown, [date_picker, location_dropdown2], car_dropdown2)
+            location_dropdown2.change(update_car_dropdown, [date_picker, location_dropdown2], car_dropdown2)
 
-                date_picker.change(update_car_dropdown, [date_picker, location_dropdown2], car_dropdown2)
-                location_dropdown2.change(update_car_dropdown, [date_picker, location_dropdown2], car_dropdown2)
+            date_picker.change(update_all, [date_picker, location_dropdown2, car_dropdown2],
+                              [gallery1, tank_label1, gallery2, tank_label2, gallery3, tank_label3, gallery4, tank_label4, tank_message])
+            location_dropdown2.change(update_all, [date_picker, location_dropdown2, car_dropdown2],
+                                      [gallery1, tank_label1, gallery2, tank_label2, gallery3, tank_label3, gallery4, tank_label4, tank_message])
+            car_dropdown2.change(update_all, [date_picker, location_dropdown2, car_dropdown2],
+                                [gallery1, tank_label1, gallery2, tank_label2, gallery3, tank_label3, gallery4, tank_label4, tank_message])
 
-                date_picker.change(update_all, [date_picker, location_dropdown2, car_dropdown2],
-                                  [gallery1, tank_label1, gallery2, tank_label2, gallery3, tank_label3, gallery4, tank_label4, tank_message])
-                location_dropdown2.change(update_all, [date_picker, location_dropdown2, car_dropdown2],
-                                          [gallery1, tank_label1, gallery2, tank_label2, gallery3, tank_label3, gallery4, tank_label4, tank_message])
-                car_dropdown2.change(update_all, [date_picker, location_dropdown2, car_dropdown2],
-                                    [gallery1, tank_label1, gallery2, tank_label2, gallery3, tank_label3, gallery4, tank_label4, tank_message])
+        # Module 3: 關於 (About)
+        with gr.Tab("ℹ️ 關於"):
+            gr.Markdown("""
+            ## 落油記錄工具
+            
+            本應用程序用於記錄和管理油田測量數據。
+            
+            **功能：**
+            - 📸 拍照並上傳油田測量照片
+            - 📋 查看歷史記錄和相冊
+            - 🔍 OCR 識別測量數值
+            - 💾 自動保存和組織數據
+            
+            **使用說明：**
+            1. 在"拍照"標籤頁選擇地點、車號和缸號
+            2. 為每個類別上傳相應的照片
+            3. 點擊"儲存所有照片"保存數據
+            4. 在"記錄"標籤頁查看歷史數據
+            
+            **支持的地點：**
+            - CFD創富
+            - CWD柴灣
+            - SHD小蠔灣
+            - SWD上環
+            - TCD東涌
+            - TKD將軍澳
+            - TMD屯門
+            - WCD黃竹坑
+            - WKD西九
+            
+            ---
+            版本 1.0.0 | 2026-05-22
+            """)
 
-            # Module 3: 關於 (About)
-            with gr.Tab("ℹ️ 關於"):
-                gr.Markdown("""
-                ## 落油記錄工具
-                
-                本應用程序用於記錄和管理油田測量數據。
-                
-                **功能：**
-                - 📸 拍照並上傳油田測量照片
-                - 📋 查看歷史記錄和相冊
-                - 🔍 OCR 識別測量數值
-                - 💾 自動保存和組織數據
-                
-                **使用說明：**
-                1. 在"拍照"標籤頁選擇地點、車號和缸號
-                2. 為每個類別上傳相應的照片
-                3. 點擊"儲存所有照片"保存數據
-                4. 在"記錄"標籤頁查看歷史數據
-                
-                **支持的地點：**
-                - CFD創富
-                - CWD柴灣
-                - SHD小蠔灣
-                - SWD上環
-                - TCD東涌
-                - TKD將軍澳
-                - TMD屯門
-                - WCD黃竹坑
-                - WKD西九
-                
-                ---
-                版本 1.0.0 | 2026-05-22
-                """)
-
-        demo.css = """
-        #camera_input button {
-            transform: scale(2);
-        }
-        """
-        
-        return demo
+    demo.css = """
+    #camera_input button {
+        transform: scale(2);
+    }
+    """
 
 if __name__ == "__main__":
     try:
-        # Create Gradio interface
-        demo = create_gradio_interface()
-        
         # Get port from environment or default to 7860
         port = int(os.getenv("PORT", "7860"))
         
